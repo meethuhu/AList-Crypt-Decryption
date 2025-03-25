@@ -2,6 +2,8 @@
 
 用于解密 AList Crypt 加密的文件，使用 rclone 作为后端。支持明文密码和混淆密码，完全兼容 AList 的加密设置。
 
+![image](https://github.com/user-attachments/assets/de99249b-58bf-4dbb-b410-007a125b2256)
+
 ## 依赖
 
 - Python 3.7+
