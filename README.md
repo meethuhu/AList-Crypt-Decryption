@@ -34,11 +34,17 @@ python main.py --config config.yaml
 
 ### 使用命令行参数
 
+最简单的使用方式：
 ```bash
-python main.py --input yourpath --password yourpassword
+python main.py --password your_password --input /path/to/encrypted
 ```
 
+完整参数示例：
+```bash
+python main.py --password your_password --salt your_salt --input /path/to/encrypted --output /path/to/decrypted --filename-encryption standard --directory-encryption --suffix .bin --filename-encoding base64 --no-plaintext-password
+```
 ### 可用参数
+```
 --config                配置文件路径
 --password              AList Crypt 密码
 --salt                  AList Crypt 盐值（可选）
@@ -49,17 +55,6 @@ python main.py --input yourpath --password yourpassword
 --suffix                加密文件后缀（可选，默认: .bin）
 --filename-encoding [base64/base32/base32768] 文件名编码方式（可选，默认: base64）
 --no-plaintext-password 使用混淆形式的密码和盐值（可选，默认使用明文）
-
-### 示例命令
-
-最简单的使用方式：
-```bash
-python main.py --password your_password --input /path/to/encrypted
-```
-
-完整参数示例：
-```bash
-python main.py --password your_password --salt your_salt --input /path/to/encrypted --output /path/to/decrypted --filename-encryption standard --directory-encryption --suffix .bin --filename-encoding base32768 --no-plaintext-password
 ```
 
 ## 许可证
