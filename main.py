@@ -337,7 +337,7 @@ def main() -> None:
             decryptor = RcloneAlistDecryptor(config_file=args.config)
             decryptor.decrypt()
         else:
-            if not args.input or not args.output:
+            if not args.input:  # 只检查输入目录
                 parser.print_help()
                 return
                 
@@ -351,7 +351,7 @@ def main() -> None:
                 plaintext_password=args.plaintext_password
             )
             
-            decryptor.decrypt(args.input, args.output)
+            decryptor.decrypt(args.input, args.output)  # output 可以为 None
             
     except Exception as e:
         print(f"\n错误: {e}")
