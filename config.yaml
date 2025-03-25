@@ -14,10 +14,10 @@ encrypt: "D:\\Crypt"
 decrypt: ""
 
 # 文件名加密 [off/standard/obfuscate]
-filename_encryption: "standard"
+filename_encryption: "off"
 
 # 文件夹名称加密 [true/false]
-directory_name_encryption: true
+directory_name_encryption: false
 
 # 加密文件后缀
 encrypted_suffix: ".bin"
