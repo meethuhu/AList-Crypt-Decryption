@@ -1,0 +1,26 @@
+# 明文密码 [true/false]
+plaintext_password: true
+
+# 密码 (明文或混淆密码)
+password: "000"
+
+# 盐值 (明文或混淆密码)
+salt: "000"
+
+# 加密文件夹路径
+encrypt: "D:\\Crypt"
+
+# 解密文件夹路径 (留空则在加密文件夹下创建.Decrypt文件夹)
+decrypt: ""
+
+# 文件名加密 [off/standard/obfuscate]
+filename_encryption: "standard"
+
+# 文件夹名称加密 [true/false]
+directory_name_encryption: true
+
+# 加密文件后缀
+encrypted_suffix: ".bin"
+
+# 文件名编码 [base64/base32/base32768]
+filename_encoding: "base64"
