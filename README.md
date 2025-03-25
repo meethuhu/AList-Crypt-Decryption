@@ -26,7 +26,7 @@ pip install pyyaml
 
 1. 复制并修改配置文件
 ```bash
-cp config.example.yaml config.yaml
+config.yaml
 ```
 
 2. 运行程序
