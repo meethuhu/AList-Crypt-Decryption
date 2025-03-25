@@ -13,7 +13,7 @@
 
 1. 安装 Python 依赖
 ```bash
-pip install -r requirements.txt
+pip install pyyaml
 ```
 
 2. 安装 rclone
