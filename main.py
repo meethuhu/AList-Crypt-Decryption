@@ -38,7 +38,7 @@ class RcloneAlistDecryptor:
         directory_encryption: bool = False,
         suffix: str = ".bin",
         filename_encoding: str = "base64",
-        plaintext_password: bool = False
+        plaintext_password: bool = True
     ):
         """
         初始化解密工具
@@ -300,23 +300,30 @@ def parse_args() -> argparse.ArgumentParser:
     parser.add_argument(
         '--filename-encryption',
         choices=['off', 'standard', 'obfuscate'],
-        help='文件名加密方式'
+        default='off',
+        help='文件名加密方式 (默认: off)'
     )
     parser.add_argument(
         '--directory-encryption',
         action='store_true',
-        help='是否加密目录名'
+        default=False,
+        help='是否加密目录名 (默认: False)'
     )
-    parser.add_argument('--suffix', help='加密文件后缀')
+    parser.add_argument(
+        '--suffix',
+        default='.bin',
+        help='加密文件后缀 (默认: .bin)'
+    )
     parser.add_argument(
         '--filename-encoding',
         choices=['base64', 'base32', 'base32768'],
-        help='文件名编码方式'
+        default='base64',
+        help='文件名编码方式 (默认: base64)'
     )
     parser.add_argument(
-        '--plaintext-password',
+        '--no-plaintext-password',
         action='store_true',
-        help='密码和盐值是否为明文'
+        help='密码和盐值是否为混淆形式 (默认使用明文)'
     )
     
     return parser
@@ -348,7 +355,7 @@ def main() -> None:
                 directory_encryption=args.directory_encryption,
                 suffix=args.suffix,
                 filename_encoding=args.filename_encoding,
-                plaintext_password=args.plaintext_password
+                plaintext_password=not args.no_plaintext_password
             )
             
             decryptor.decrypt(args.input, args.output)  # output 可以为 None
