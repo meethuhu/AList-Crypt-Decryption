@@ -1,0 +1,332 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"path/filepath"
+	"time"
+
+	"github.com/egoist/mygo"
+	"github.com/meethuhu/alist-crypt-decryption/internal/decryptor"
+	"github.com/meethuhu/alist-crypt-decryption/internal/rcrypt"
+)
+
+var (
+	nameEncOptions   = []string{"off", "standard", "obfuscate"}
+	encodingOptions  = []string{"base64", "base32", "base32768"}
+	previewFileLimit = 300
+	previewDebounce  = 260 * time.Millisecond
+)
+
+// previewItem 是文件名预览里的一行。
+type previewItem struct {
+	Encrypted string
+	Decrypted string
+	Err       error
+}
+
+// app 是窗口展示的全部状态。view 每帧都从它重建界面。
+type app struct {
+	// 表单
+	srcDir       string
+	dstDir       string
+	password     string
+	salt         string
+	showPassword bool
+	advanced     bool
+	nameEnc      string
+	encoding     string
+	suffix       string
+	dirEnc       bool
+
+	// 文件名预览
+	previews    []previewItem
+	previewErr  string
+	previewing  bool
+	previewSeq  int
+	totalFiles  int
+	previewNote string
+
+	// 解密过程
+	running  bool
+	progress decryptor.Progress
+	result   *decryptor.Result
+	cancel   context.CancelFunc
+	errorMsg string
+	logs     []string
+
+	// Toast 用序号驱动：view 在每帧末尾检查，只弹一次
+	toastMsg   string
+	toastSeq   int
+	toastShown int
+
+	win *mygo.Window
+}
+
+func newApp() *app {
+	return &app{
+		nameEnc:  "standard",
+		encoding: "base64",
+		suffix:   ".bin",
+		dirEnc:   true,
+	}
+}
+
+func (a *app) cipherOptions() rcrypt.Options {
+	mode, err := rcrypt.ParseNameEncryption(a.nameEnc)
+	if err != nil {
+		mode = rcrypt.NameEncryptionStandard
+	}
+	return rcrypt.Options{
+		Password:          a.password,
+		Salt:              a.salt,
+		NameEncryption:    mode,
+		DirNameEncryption: a.dirEnc,
+		EncryptedSuffix:   a.suffix,
+		NameEncoding:      a.encoding,
+	}
+}
+
+// valid 报告当前表单是否已经可以开始解密。
+func (a *app) valid() bool {
+	return a.password != "" && a.srcDir != "" && a.dstDir != "" && a.srcDir != a.dstDir
+}
+
+// readyHint 给出还不能开始的原因，用于按钮旁的提示。
+func (a *app) readyHint() string {
+	switch {
+	case a.password == "":
+		return "请填写密码"
+	case a.srcDir == "":
+		return "请选择加密目录"
+	case a.dstDir == "":
+		return "请选择输出目录"
+	case a.srcDir == a.dstDir:
+		return "输出目录不能和源目录相同"
+	}
+	return ""
+}
+
+// schedulePreview 在用户改动参数后，延迟重新计算文件名预览。
+//
+// 每次调用都会让上一次的预览作废（通过序号），所以连续输入密码时
+// 只有最后一次真正去扫目录。
+func (a *app) schedulePreview() {
+	a.previewSeq++
+	seq := a.previewSeq
+
+	if a.password == "" || a.srcDir == "" {
+		a.previews = nil
+		a.previewErr = ""
+		a.previewing = false
+		a.totalFiles = 0
+		return
+	}
+
+	a.previewing = true
+	a.previewErr = ""
+
+	go func() {
+		time.Sleep(previewDebounce)
+
+		items, total, note, err := buildPreview(a.srcDir, a.dstDir, a.cipherOptions(), previewFileLimit)
+
+		a.updateUI(func() {
+			if seq != a.previewSeq {
+				return // 已有更新的请求，丢弃这次结果
+			}
+			a.previewing = false
+			a.previews = items
+			a.totalFiles = total
+			a.previewNote = note
+			if err != nil {
+				a.previewErr = err.Error()
+			} else {
+				a.previewErr = ""
+			}
+		})
+	}()
+}
+
+// buildPreview 扫描源目录，解密前若干个文件名。
+func buildPreview(src, dst string, opts rcrypt.Options, limit int) ([]previewItem, int, string, error) {
+	c, err := rcrypt.New(opts)
+	if err != nil {
+		return nil, 0, "", err
+	}
+
+	srcAbs, err := filepath.Abs(src)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	dstAbs, _ := filepath.Abs(dst)
+
+	var (
+		items []previewItem
+		total int
+	)
+
+	walkErr := filepath.WalkDir(srcAbs, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // 单个目录读不了就跳过，不打断预览
+		}
+		if d.IsDir() {
+			if path == dstAbs {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+
+		rel, err := filepath.Rel(srcAbs, path)
+		if err != nil {
+			return nil
+		}
+		relSlash := filepath.ToSlash(rel)
+
+		plain, derr := c.DecryptFileName(relSlash)
+		if derr != nil {
+			if errors.Is(derr, rcrypt.ErrNotEncrypted) {
+				return nil
+			}
+			if len(items) < limit {
+				items = append(items, previewItem{Encrypted: relSlash, Err: derr})
+			}
+			total++
+			return nil
+		}
+
+		total++
+		if len(items) < limit {
+			items = append(items, previewItem{Encrypted: relSlash, Decrypted: plain})
+		}
+		return nil
+	})
+
+	if walkErr != nil {
+		return items, total, "", walkErr
+	}
+
+	note := ""
+	if total == 0 {
+		note = "这个目录里没有找到可解密的文件"
+	} else if total > len(items) {
+		note = fmt.Sprintf("共 %d 个文件，仅预览前 %d 个", total, len(items))
+	}
+
+	return items, total, note, nil
+}
+
+// start 启动一次解密。
+func (a *app) start() {
+	if a.running || !a.valid() {
+		return
+	}
+
+	c, err := rcrypt.New(a.cipherOptions())
+	if err != nil {
+		a.errorMsg = err.Error()
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	a.cancel = cancel
+	a.running = true
+	a.result = nil
+	a.errorMsg = ""
+	a.logs = nil
+	a.progress = decryptor.Progress{}
+
+	src, dst := a.srcDir, a.dstDir
+
+	go func() {
+		res, runErr := decryptor.Run(ctx, src, dst, c, decryptor.Options{
+			Overwrite: true,
+			OnProgress: func(p decryptor.Progress) {
+				a.updateUI(func() { a.progress = p })
+			},
+			OnFileDone: func(fr decryptor.FileResult) {
+				if fr.Err == nil {
+					return
+				}
+				msg := fmt.Sprintf("%s：%v", fr.Source, fr.Err)
+				a.updateUI(func() { a.pushLog(msg) })
+			},
+		})
+
+		a.updateUI(func() {
+			a.running = false
+			a.result = res
+			switch {
+			case runErr != nil && errors.Is(runErr, context.Canceled):
+				a.pushLog("已取消")
+				a.showToast("已取消")
+			case runErr != nil:
+				a.errorMsg = runErr.Error()
+				a.showToast("解密失败：" + runErr.Error())
+			case res != nil && len(res.Failed) > 0:
+				a.pushLog(fmt.Sprintf("完成，%d 个文件失败", len(res.Failed)))
+				a.showToast(fmt.Sprintf("完成：成功 %d 个，失败 %d 个", res.Success, len(res.Failed)))
+			case res != nil:
+				a.showToast(fmt.Sprintf("完成：%d 个文件已解密", res.Success))
+			}
+		})
+	}()
+}
+
+func (a *app) stop() {
+	if a.cancel != nil {
+		a.cancel()
+	}
+}
+
+func (a *app) pushLog(msg string) {
+	a.logs = append(a.logs, msg)
+	if len(a.logs) > 200 {
+		a.logs = a.logs[len(a.logs)-200:]
+	}
+}
+
+// showToast 安排在下一帧弹一条提示。必须在主线程调用。
+func (a *app) showToast(msg string) {
+	a.toastMsg = msg
+	a.toastSeq++
+}
+
+// updateUI 把一次状态修改搬到主线程并触发重绘。
+// 窗口还没建好时（例如测试里）直接执行，方便脱离窗口跑视图逻辑。
+func (a *app) updateUI(fn func()) {
+	if a.win == nil {
+		fn()
+		return
+	}
+	a.win.Update(fn)
+}
+
+// pickDir 打开系统目录选择框。对话框是阻塞的，必须放在 goroutine 里。
+func (a *app) pickDir(target *string, title string) {
+	go func() {
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
+			Parent:    a.win,
+			Title:     title,
+			Directory: true,
+		})
+		if err != nil || len(paths) == 0 {
+			return
+		}
+		chosen := paths[0]
+		a.updateUI(func() {
+			isSource := target == &a.srcDir
+			*target = chosen
+			// 选完源目录后，如果输出目录还是空的，给个默认值
+			if isSource && a.dstDir == "" {
+				a.dstDir = filepath.Join(chosen, ".Decrypt")
+			}
+			a.schedulePreview()
+		})
+	}()
+}
