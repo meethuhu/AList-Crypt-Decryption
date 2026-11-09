@@ -127,6 +127,10 @@ func (a *app) buildPreview(c *ui.Context, t *ui.Theme) {
 		} else if a.allPreviewFailed() {
 			ui.Text(c, "这些文件名都解不开，通常是密码、盐值或编码设置和存储端不一致。").
 				FontSize(12).TextColor(t.Danger)
+			// 把第一个具体错误露出来，排查时比一句笼统提示有用
+			if detail := a.firstPreviewError(); detail != "" {
+				ui.Text(c, "首个错误："+detail).FontSize(11).TextColor(t.TextMuted).SingleLine()
+			}
 		}
 
 		// 没有内容时，把提示放在整块空白区域的正中间
@@ -166,6 +170,16 @@ func (a *app) allPreviewFailed() bool {
 		}
 	}
 	return true
+}
+
+// firstPreviewError 返回第一条解密错误，用于在界面上给出可排查的线索。
+func (a *app) firstPreviewError() string {
+	for _, it := range a.previews {
+		if it.Err != nil {
+			return it.Err.Error()
+		}
+	}
+	return ""
 }
 
 func (a *app) buildFooter(c *ui.Context, t *ui.Theme) {
