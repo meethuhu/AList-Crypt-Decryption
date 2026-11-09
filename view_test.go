@@ -36,7 +36,7 @@ func TestAdvancedOptions(t *testing.T) {
 	if !a.advanced {
 		t.Fatal("点击后高级选项没有展开")
 	}
-	for _, want := range []string{"文件名加密", "编码", "加密后缀"} {
+	for _, want := range []string{"文件名加密", "编码", "后缀", "目录名加密"} {
 		if !tt.HasText(want) {
 			t.Errorf("展开后缺少 %q，当前文本：%q", want, tt.Texts())
 		}

@@ -524,3 +524,26 @@ func (a *app) clearFiles() {
 	a.files = nil
 	a.schedulePreview()
 }
+
+// allPreviewFailed 报告预览里是否一个都没解开——这通常意味着参数不对。
+func (a *app) allPreviewFailed() bool {
+	if len(a.previews) == 0 {
+		return false
+	}
+	for _, it := range a.previews {
+		if it.Err == nil {
+			return false
+		}
+	}
+	return true
+}
+
+// firstPreviewError 返回第一条错误，用于在界面上给出可排查的线索。
+func (a *app) firstPreviewError() string {
+	for _, it := range a.previews {
+		if it.Err != nil {
+			return it.Err.Error()
+		}
+	}
+	return ""
+}

@@ -17,12 +17,12 @@ func main() {
 	mygo.App.WhenReady(func() {
 		a.win = mygo.NewWindow(mygo.WindowOptions{
 			Title:     appName,
-			Width:     800,
-			Height:    840,
-			MinWidth:  640,
+			Width:     920,
+			Height:    690,
+			MinWidth:  760,
 			MinHeight: 560,
 			// 记住用户上次的窗口位置和大小
-			StateKey: "main",
+			StateKey: "main-v2",
 			Content:  ui.View(a.view),
 		})
 	})
