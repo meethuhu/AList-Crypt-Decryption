@@ -23,9 +23,12 @@ var (
 
 // previewItem 是文件名预览里的一行。
 type previewItem struct {
+	// Source 是显示给用户的源名字，Target 是它会被变成的样子。
 	Source string
 	Target string
-	Err    error
+	// FullPath 只在手动选文件时填，用于悬停时显示完整路径。
+	FullPath string
+	Err      error
 }
 
 // app 是窗口展示的全部状态。view 每帧都从它重建界面。
@@ -44,6 +47,10 @@ type app struct {
 	encoding     string
 	suffix       string
 	dirEnc       bool
+
+	// files 非空时只处理这些文件，忽略 srcDir。
+	// 它们会被平铺到输出目录，索引与预览列表一一对应。
+	files []string
 
 	// 文件名预览
 	previews    []previewItem
@@ -84,6 +91,10 @@ func newApp() *app {
 	}
 	a.srcDir = wd
 	a.dstDir = filepath.Join(wd, defaultOutName(a.mode))
+
+	if len(e2eFiles) > 0 {
+		a.files = e2eFiles
+	}
 	return a
 }
 
@@ -140,24 +151,31 @@ func (a *app) cipherOptions() rcrypt.Options {
 	}
 }
 
-// valid 报告当前表单是否已经可以开始解密。
+// valid 报告当前表单是否已经可以开始处理。
 func (a *app) valid() bool {
-	return a.password != "" && a.srcDir != "" && a.dstDir != "" && a.srcDir != a.dstDir
+	if a.password == "" || a.dstDir == "" {
+		return false
+	}
+	if len(a.files) > 0 {
+		return true // 手选文件模式下不需要源目录
+	}
+	return a.srcDir != "" && a.srcDir != a.dstDir
 }
 
 // readyHint 给出还不能开始的原因，用于按钮旁的提示。
 func (a *app) readyHint() string {
+	byFiles := len(a.files) > 0
 	switch {
 	case a.password == "":
 		return "请填写密码"
-	case a.srcDir == "":
+	case !byFiles && a.srcDir == "":
 		if a.mode == cryptjob.Encrypt {
-			return "请选择要加密的目录"
+			return "请选择要加密的目录或文件"
 		}
-		return "请选择加密文件所在的目录"
+		return "请选择加密文件所在的目录，或直接选文件"
 	case a.dstDir == "":
 		return "请选择输出目录"
-	case a.srcDir == a.dstDir:
+	case !byFiles && a.srcDir == a.dstDir:
 		return "输出目录不能和源目录相同"
 	}
 	return ""
@@ -171,21 +189,37 @@ func (a *app) schedulePreview() {
 	a.previewSeq++
 	seq := a.previewSeq
 
-	if a.password == "" || a.srcDir == "" {
+	if a.password == "" || (a.srcDir == "" && len(a.files) == 0) {
 		a.previews = nil
 		a.previewErr = ""
 		a.previewing = false
 		a.totalFiles = 0
+		a.previewNote = ""
 		return
 	}
 
 	a.previewing = true
 	a.previewErr = ""
 
+	files := append([]string(nil), a.files...)
+	src, dst, mode := a.srcDir, a.dstDir, a.mode
+	opts := a.cipherOptions()
+
 	go func() {
 		time.Sleep(previewDebounce)
 
-		items, total, note, err := buildPreview(a.srcDir, a.dstDir, a.cipherOptions(), a.mode, previewFileLimit)
+		var (
+			items []previewItem
+			total int
+			note  string
+			err   error
+		)
+		if len(files) > 0 {
+			items, err = buildPreviewForFiles(files, opts, mode)
+			total = len(items)
+		} else {
+			items, total, note, err = buildPreview(src, dst, opts, mode, previewFileLimit)
+		}
 
 		a.updateUI(func() {
 			if seq != a.previewSeq {
@@ -202,6 +236,35 @@ func (a *app) schedulePreview() {
 			}
 		})
 	}()
+}
+
+// buildPreviewForFiles 为手动选中的文件生成预览。
+// 每条记录与传入的 files 一一对应，失败的也占一行，方便按索引删除。
+func buildPreviewForFiles(files []string, opts rcrypt.Options, mode cryptjob.Mode) ([]previewItem, error) {
+	c, err := rcrypt.New(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]previewItem, 0, len(files))
+	for _, path := range files {
+		name := filepath.Base(path)
+		item := previewItem{Source: name, FullPath: path}
+
+		var mapped string
+		if mode == cryptjob.Decrypt {
+			mapped, err = c.DecryptFileName(name)
+		} else {
+			mapped, err = c.EncryptFileName(name)
+		}
+		if err != nil {
+			item.Err = err
+		} else {
+			item.Target = mapped
+		}
+		items = append(items, item)
+	}
+	return items, nil
 }
 
 // buildPreview 扫描源目录，预览前若干个文件名会变成什么。
@@ -312,10 +375,12 @@ func (a *app) start() {
 	a.progress = cryptjob.Progress{}
 
 	src, dst, mode := a.srcDir, a.dstDir, a.mode
+	files := append([]string(nil), a.files...)
 
 	go func() {
 		res, runErr := cryptjob.Run(ctx, src, dst, c, cryptjob.Options{
-			Mode:      a.mode,
+			Mode:      mode,
+			Files:     files,
 			Overwrite: true,
 			OnProgress: func(p cryptjob.Progress) {
 				a.updateUI(func() { a.progress = p })
@@ -339,11 +404,19 @@ func (a *app) start() {
 			case runErr != nil:
 				a.errorMsg = runErr.Error()
 				a.showToast(mode.String() + "失败：" + runErr.Error())
-			case res != nil && len(res.Failed) > 0:
-				a.pushLog(fmt.Sprintf("完成，%d 个文件失败", len(res.Failed)))
-				a.showToast(fmt.Sprintf("完成：成功 %d 个，失败 %d 个", res.Success, len(res.Failed)))
 			case res != nil:
-				a.showToast(fmt.Sprintf("完成：%d 个文件已%s", res.Success, mode))
+				msg := fmt.Sprintf("完成：%d 个文件已%s", res.Success, mode)
+				if len(res.Failed) > 0 {
+					msg = fmt.Sprintf("完成：成功 %d 个，失败 %d 个", res.Success, len(res.Failed))
+				}
+				if res.Skipped > 0 {
+					msg += fmt.Sprintf("，跳过 %d 个不是加密文件的", res.Skipped)
+					a.pushLog(msg)
+				}
+				if len(res.Failed) > 0 {
+					a.pushLog(msg)
+				}
+				a.showToast(msg)
 			}
 		})
 	}()
@@ -393,11 +466,61 @@ func (a *app) pickDir(target *string, title string) {
 		a.updateUI(func() {
 			isSource := target == &a.srcDir
 			*target = chosen
-			// 选完源目录后，如果输出目录还是空的，给个默认值
-			if isSource && a.dstDir == "" {
-				a.dstDir = filepath.Join(chosen, ".Decrypt")
+
+			if isSource {
+				// 选了目录就退出「手选文件」模式
+				a.files = nil
+				// 输出目录如果还是默认名字，跟着源目录走
+				if filepath.Base(a.dstDir) == defaultOutName(a.mode) {
+					a.dstDir = filepath.Join(chosen, defaultOutName(a.mode))
+				}
 			}
 			a.schedulePreview()
 		})
 	}()
+}
+
+// pickFiles 选择若干具体文件。可以多次追加，重复选择同一个文件会被忽略。
+func (a *app) pickFiles() {
+	go func() {
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
+			Parent:   a.win,
+			Title:    "选择文件",
+			Multiple: true,
+		})
+		if err != nil || len(paths) == 0 {
+			return
+		}
+		a.updateUI(func() {
+			seen := make(map[string]bool, len(a.files))
+			for _, f := range a.files {
+				seen[f] = true
+			}
+			for _, p := range paths {
+				if !seen[p] {
+					a.files = append(a.files, p)
+					seen[p] = true
+				}
+			}
+			a.schedulePreview()
+		})
+	}()
+}
+
+// removeFile 从手动选择的列表里移除一个文件。
+func (a *app) removeFile(i int) {
+	if i < 0 || i >= len(a.files) {
+		return
+	}
+	a.files = append(a.files[:i], a.files[i+1:]...)
+	a.schedulePreview()
+}
+
+// clearFiles 清空手动选择的文件，回到「按目录处理」。
+func (a *app) clearFiles() {
+	if len(a.files) == 0 {
+		return
+	}
+	a.files = nil
+	a.schedulePreview()
 }

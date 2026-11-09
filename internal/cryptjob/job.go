@@ -35,7 +35,10 @@ func (m Mode) String() string {
 
 // Options 控制任务行为。
 type Options struct {
-	Mode        Mode
+	Mode Mode
+	// Files 非空时只处理这些文件（绝对路径），忽略 Src 目录。
+	// 它们会被平铺到目标目录，同名时自动加序号。
+	Files       []string
 	Concurrency int
 	Overwrite   bool
 	OnProgress  func(Progress)
@@ -76,6 +79,9 @@ type FileResult struct {
 type Result struct {
 	Total   int
 	Success int
+	// Skipped 是手动选中的文件里，明显不该处理而被跳过的数量，
+	// 比如解密模式下选了一个普通文件。
+	Skipped int
 	Failed  []FileResult
 	Bytes   int64
 }
@@ -100,27 +106,43 @@ type progressState struct {
 
 // Run 遍历 src 下的文件，加密或解密后写入 dst。
 //
+// 如果 opts.Files 非空，就只处理这些文件，不看 src 目录。
 // 单个文件失败不会中断整体流程，失败项收集在 Result.Failed 里。
 func Run(ctx context.Context, src, dst string, c *rcrypt.Cipher, opts Options) (*Result, error) {
-	srcAbs, err := filepath.Abs(src)
-	if err != nil {
-		return nil, err
-	}
 	dstAbs, err := filepath.Abs(dst)
 	if err != nil {
 		return nil, err
 	}
-	if srcAbs == dstAbs {
-		return nil, errors.New("输出目录不能和源目录相同")
+
+	result := &Result{}
+	var tasks []task
+
+	if len(opts.Files) > 0 {
+		var skipped int
+		tasks, skipped, err = collectFiles(opts.Files, dstAbs, c, opts.Mode)
+		if err != nil {
+			return nil, err
+		}
+		result.Skipped = skipped
+	} else {
+		srcAbs, absErr := filepath.Abs(src)
+		if absErr != nil {
+			return nil, absErr
+		}
+		if srcAbs == dstAbs {
+			return nil, errors.New("输出目录不能和源目录相同")
+		}
+		tasks, err = collectDir(srcAbs, dstAbs, c, opts.Mode)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	tasks, err := collect(srcAbs, dstAbs, c, opts.Mode)
-	if err != nil {
-		return nil, err
-	}
 	if len(tasks) == 0 {
-		return &Result{}, nil
+		return result, nil
 	}
+
+	result.Total = len(tasks)
 
 	workers := opts.Concurrency
 	if workers <= 0 {
@@ -133,7 +155,6 @@ func Run(ctx context.Context, src, dst string, c *rcrypt.Cipher, opts Options) (
 	var (
 		state  progressState
 		resMu  sync.Mutex
-		result = &Result{Total: len(tasks)}
 		start  = time.Now()
 	)
 	for _, t := range tasks {
@@ -210,8 +231,8 @@ func Run(ctx context.Context, src, dst string, c *rcrypt.Cipher, opts Options) (
 	return result, nil
 }
 
-// collect 遍历源目录，把每个文件映射成目标路径。
-func collect(srcAbs, dstAbs string, c *rcrypt.Cipher, mode Mode) ([]task, error) {
+// collectDir 遍历源目录，把每个文件映射成目标路径。
+func collectDir(srcAbs, dstAbs string, c *rcrypt.Cipher, mode Mode) ([]task, error) {
 	var tasks []task
 
 	err := filepath.WalkDir(srcAbs, func(path string, d fs.DirEntry, err error) error {
@@ -281,6 +302,73 @@ func collect(srcAbs, dstAbs string, c *rcrypt.Cipher, mode Mode) ([]task, error)
 		return nil, err
 	}
 	return tasks, nil
+}
+
+// collectFiles 处理手动选中的一组文件。它们被打平到目标目录，
+// 因为选中的文件可能来自不同目录，保留原路径既没意义也容易越界。
+//
+// 返回值里的 skipped 是解密模式下明显不是加密文件、被跳过的数量。
+func collectFiles(files []string, dstAbs string, c *rcrypt.Cipher, mode Mode) ([]task, int, error) {
+	var (
+		tasks   []task
+		skipped int
+		used    = make(map[string]int)
+	)
+
+	for _, path := range files {
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			continue
+		}
+
+		rel := filepath.Base(path)
+
+		var mapped string
+		if mode == Decrypt {
+			mapped, err = c.DecryptFileName(rel)
+			if err != nil {
+				// 手选的普通文件在解密模式下没意义，跳过
+				skipped++
+				continue
+			}
+		} else {
+			mapped, err = c.EncryptFileName(rel)
+			if err != nil {
+				skipped++
+				continue
+			}
+		}
+
+		mapped = uniqueName(mapped, used)
+
+		dstPath, err := safeJoin(dstAbs, mapped)
+		if err != nil {
+			return nil, skipped, fmt.Errorf("文件名 %q 映射后路径非法: %w", rel, err)
+		}
+
+		tasks = append(tasks, task{
+			srcRel:  rel,
+			dstRel:  mapped,
+			srcPath: path,
+			dstPath: dstPath,
+			size:    info.Size(),
+		})
+	}
+	return tasks, skipped, nil
+}
+
+// uniqueName 避免选中的不同目录里存在同名文件时互相覆盖。
+func uniqueName(name string, used map[string]int) string {
+	n, seen := used[name]
+	if !seen {
+		used[name] = 1
+		return name
+	}
+	used[name] = n + 1
+
+	ext := filepath.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	return fmt.Sprintf("%s (%d)%s", base, n+1, ext)
 }
 
 // safeJoin 把映射出来的相对路径拼到目标目录下，并确保不会逃逸出去。

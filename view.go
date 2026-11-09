@@ -44,16 +44,24 @@ func (a *app) buildHeader(c *ui.Context, t *ui.Theme) {
 
 func (a *app) buildForm(c *ui.Context, t *ui.Theme) {
 	ui.Form(c, func() {
-		ui.Field(c, "加密目录", func() {
+		ui.Field(c, "来源", func() {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				if ui.TextInput(c.Key("src"), &a.srcDir).Grow(1).Changed() {
-					a.schedulePreview()
+				if len(a.files) > 0 {
+					ui.Textf(c, "已选择 %d 个文件", len(a.files)).
+						FontSize(13).Grow(1).TextColor(t.TextMuted)
+				} else {
+					if ui.TextInput(c.Key("src"), &a.srcDir).Grow(1).Changed() {
+						a.schedulePreview()
+					}
 				}
-				if ui.Button(c, "选择").Clicked() {
-					a.pickDir(&a.srcDir, "选择加密目录")
+				if ui.Button(c, "文件夹").Clicked() {
+					a.pickDir(&a.srcDir, "选择目录")
+				}
+				if ui.Button(c, "文件").Clicked() {
+					a.pickFiles()
 				}
 			})
-		})
+		}).Description("可以整个目录一起处理，也可以只挑几个文件。")
 
 		ui.Field(c, "输出目录", func() {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
@@ -118,8 +126,14 @@ func (a *app) buildForm(c *ui.Context, t *ui.Theme) {
 
 func (a *app) buildPreview(c *ui.Context, t *ui.Theme) {
 	ui.Column(c).Grow(1).Gap(6).Children(func() {
+		byFiles := len(a.files) > 0
+
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "文件名预览").FontSize(13).Bold()
+			if byFiles {
+				ui.Text(c, "已选的文件").FontSize(13).Bold()
+			} else {
+				ui.Text(c, "文件名预览").FontSize(13).Bold()
+			}
 			switch {
 			case a.previewing:
 				ui.Text(c, "识别中…").FontSize(12).TextColor(t.TextMuted)
@@ -128,6 +142,12 @@ func (a *app) buildPreview(c *ui.Context, t *ui.Theme) {
 			}
 			if a.previewNote != "" {
 				ui.Text(c, a.previewNote).FontSize(12).TextColor(t.TextMuted)
+			}
+			if byFiles {
+				ui.Text(c, "").Grow(1)
+				if ui.Button(c, "清空").Clicked() {
+					a.clearFiles()
+				}
 			}
 		})
 
@@ -157,18 +177,29 @@ func (a *app) buildPreview(c *ui.Context, t *ui.Theme) {
 			return
 		}
 
+		removeIdx := -1
 		ui.List(c, nil, len(a.previews), func(i int) {
 			it := a.previews[i]
 			ui.Row(c).Gap(10).AlignItems(ui.Center).Padding(4, 8).Children(func() {
-				ui.Text(c, it.Source).FontSize(12).Width(310).SingleLine().TextColor(t.TextMuted)
+				ui.Text(c, it.Source).FontSize(12).Width(290).SingleLine().TextColor(t.TextMuted)
 				ui.Text(c, "→").FontSize(12).TextColor(t.TextMuted)
 				if it.Err != nil {
-					ui.Text(c, "无法"+a.actionWord()).FontSize(12).TextColor(t.Danger)
+					ui.Text(c, "无法"+a.actionWord()).FontSize(12).TextColor(t.Danger).Grow(1)
 				} else {
 					ui.Text(c, it.Target).FontSize(12).SingleLine().Grow(1)
 				}
+				if byFiles {
+					if ui.Button(c, "×").Width(30).Clicked() {
+						removeIdx = i
+					}
+				}
 			})
 		}).Grow(1)
+
+		// 先记下来，等列表建完再改，避免一边遍历一边改集合
+		if removeIdx >= 0 {
+			a.removeFile(removeIdx)
+		}
 	})
 }
 

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"strings"
 	"path/filepath"
 
 	"github.com/meethuhu/alist-crypt-decryption/internal/cryptjob"
@@ -21,6 +22,7 @@ func main() {
 	var (
 		modeStr  = flag.String("mode", "decrypt", "decrypt 或 encrypt")
 		src      = flag.String("src", "", "源目录")
+		files    = flag.String("files", "", "要处理的文件，用逗号分隔；设置后忽略 -src")
 		dst      = flag.String("dst", "", "目标目录")
 		password = flag.String("password", "", "Crypt 密码")
 		salt     = flag.String("salt", "", "Crypt 盐值")
@@ -33,8 +35,17 @@ func main() {
 	)
 	flag.Parse()
 
-	if *src == "" || *dst == "" {
-		fatal("必须指定 -src 和 -dst")
+	var fileList []string
+	for _, f := range strings.Split(*files, ",") {
+		if f = strings.TrimSpace(f); f != "" {
+			fileList = append(fileList, f)
+		}
+	}
+	if len(fileList) == 0 && *src == "" {
+		fatal("必须指定 -src 或 -files")
+	}
+	if *dst == "" {
+		fatal("必须指定 -dst")
 	}
 
 	mode := cryptjob.Decrypt
@@ -62,6 +73,7 @@ func main() {
 
 	res, err := cryptjob.Run(context.Background(), *src, *dst, c, cryptjob.Options{
 		Mode:      mode,
+		Files:     fileList,
 		Overwrite: true,
 		OnFileDone: func(fr cryptjob.FileResult) {
 			if fr.Err != nil && !*quiet {

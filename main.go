@@ -7,6 +7,10 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
+// e2eFiles 只在 e2e 构建下由 e2e_automation.go 填充，
+// 用来预置「手选文件」的状态，方便截图和自动化验证。
+var e2eFiles []string
+
 func main() {
 	a := newApp()
 

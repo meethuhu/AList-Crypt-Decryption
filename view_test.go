@@ -6,6 +6,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/meethuhu/alist-crypt-decryption/internal/cryptjob"
+	"github.com/meethuhu/alist-crypt-decryption/internal/rcrypt"
 )
 
 // 视图能在没有窗口的情况下渲染，这保证了界面代码本身不会 panic。
@@ -53,7 +54,7 @@ func TestValid(t *testing.T) {
 		wantHint string
 	}{
 		{"什么都没有", "", "", "", false, "请填写密码"},
-		{"只填密码", "pw", "", "", false, "请选择加密文件所在的目录"},
+		{"只填密码", "pw", "", "", false, "请选择加密文件所在的目录，或直接选文件"},
 		{"缺输出目录", "pw", "C:/enc", "", false, "请选择输出目录"},
 		{"源和输出相同", "pw", "C:/enc", "C:/enc", false, "输出目录不能和源目录相同"},
 		{"完整", "pw", "C:/enc", "C:/out", true, ""},
@@ -97,7 +98,7 @@ func TestEncryptMode(t *testing.T) {
 	b := newApp()
 	b.setMode(cryptjob.Encrypt)
 	b.password, b.srcDir = "pw", ""
-	if hint := b.readyHint(); hint != "请选择要加密的目录" {
+	if hint := b.readyHint(); hint != "请选择要加密的目录或文件" {
 		t.Errorf("加密模式提示 = %q", hint)
 	}
 }
@@ -137,5 +138,58 @@ func TestCipherOptions(t *testing.T) {
 	}
 	if opts.DirNameEncryption {
 		t.Error("目录名加密应为 false")
+	}
+}
+
+// 手动选文件时不需要源目录，删除与清空要能正确维护列表。
+func TestFileSelection(t *testing.T) {
+	a := newApp()
+	a.password = "pw"
+	a.srcDir = ""
+	a.files = []string{"C:/x/a.txt", "C:/y/b.txt"}
+
+	if !a.valid() {
+		t.Error("选了文件、有密码和输出目录就该可以开始")
+	}
+
+	a.removeFile(0)
+	if len(a.files) != 1 || a.files[0] != "C:/y/b.txt" {
+		t.Errorf("删除第 0 个后剩下 %v", a.files)
+	}
+
+	a.clearFiles()
+	if len(a.files) != 0 {
+		t.Errorf("清空后还有 %d 个", len(a.files))
+	}
+	if a.valid() {
+		t.Error("清空且没有源目录时不该有效")
+	}
+}
+
+// 选中的文件按文件名平铺，并给出加解密后的名字。
+func TestPreviewForFiles(t *testing.T) {
+	opts := rcrypt.Options{
+		Password:        "pw",
+		NameEncryption:  rcrypt.NameEncryptionStandard,
+		NameEncoding:    "base64",
+		EncryptedSuffix: ".bin",
+	}
+	items, err := buildPreviewForFiles([]string{"C:/a/说明.txt", "D:/b/photo.jpg"}, opts, cryptjob.Encrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("应有 2 条预览，实际 %d", len(items))
+	}
+	if items[0].Source != "说明.txt" {
+		t.Errorf("源名应只取文件名，实际 %q", items[0].Source)
+	}
+	for _, it := range items {
+		if it.Err != nil {
+			t.Errorf("%s 预览失败: %v", it.Source, it.Err)
+		}
+		if it.Target == "" {
+			t.Errorf("%s 没有生成目标名", it.Source)
+		}
 	}
 }
