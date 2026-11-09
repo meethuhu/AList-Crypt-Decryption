@@ -4,7 +4,11 @@ import (
 	"fmt"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/meethuhu/alist-crypt-decryption/internal/cryptjob"
 )
+
+// appName 是窗口标题和界面上显示的名字。
+const appName = "Crypt 加解密器"
 
 // view 根据 app 的状态构建整个窗口。
 // 它是即时模式的：每一帧都从头跑一遍，所以这里不保存任何跨帧数据。
@@ -27,8 +31,13 @@ func (a *app) view(c *ui.Context) {
 
 func (a *app) buildHeader(c *ui.Context, t *ui.Theme) {
 	ui.Row(c).AlignItems(ui.Center).Gap(10).Children(func() {
-		ui.Text(c, "AList Crypt 解密器").FontSize(19).Bold()
-		ui.Text(c, "兼容 Alist / OpenList").FontSize(12).TextColor(t.TextMuted)
+		ui.Text(c, appName).FontSize(19).Bold()
+		ui.Text(c, "rclone crypt 格式").FontSize(12).TextColor(t.TextMuted)
+		ui.Text(c, "").Grow(1)
+		idx := a.modeIndex()
+		if ui.Segmented(c, &idx, "解密", "加密").Label("操作").Changed() {
+			a.setMode(modeAt(idx))
+		}
 	})
 	ui.Divider(c)
 }
@@ -125,7 +134,7 @@ func (a *app) buildPreview(c *ui.Context, t *ui.Theme) {
 		if a.previewErr != "" {
 			ui.Text(c, a.previewErr).FontSize(12).TextColor(t.Danger)
 		} else if a.allPreviewFailed() {
-			ui.Text(c, "这些文件名都解不开，通常是密码、盐值或编码设置和存储端不一致。").
+			ui.Text(c, "这些文件名都处理不了，通常是密码、盐值或编码设置和存储端不一致。").
 				FontSize(12).TextColor(t.Danger)
 			// 把第一个具体错误露出来，排查时比一句笼统提示有用
 			if detail := a.firstPreviewError(); detail != "" {
@@ -135,11 +144,15 @@ func (a *app) buildPreview(c *ui.Context, t *ui.Theme) {
 
 		// 没有内容时，把提示放在整块空白区域的正中间
 		if len(a.previews) == 0 && !a.previewing {
+			hint, sub := "选择目录并填写密码后，这里会列出处理后的文件名", "先用预览确认参数是否正确，再开始整批处理"
+			if a.mode == cryptjob.Encrypt {
+				hint = "选择要加密的目录并填写密码，这里会列出加密后的文件名"
+			} else {
+				hint = "选择加密文件所在的目录并填写密码，这里会列出解密后的文件名"
+			}
 			ui.Column(c).Grow(1).Center().Gap(6).Children(func() {
-				ui.Text(c, "选择加密目录并填写密码后，这里会列出解密后的文件名").
-					FontSize(13).TextColor(t.TextMuted)
-				ui.Text(c, "先用预览确认密码是否正确，再开始整批解密").
-					FontSize(12).TextColor(t.TextMuted)
+				ui.Text(c, hint).FontSize(13).TextColor(t.TextMuted)
+				ui.Text(c, sub).FontSize(12).TextColor(t.TextMuted)
 			})
 			return
 		}
@@ -147,12 +160,12 @@ func (a *app) buildPreview(c *ui.Context, t *ui.Theme) {
 		ui.List(c, nil, len(a.previews), func(i int) {
 			it := a.previews[i]
 			ui.Row(c).Gap(10).AlignItems(ui.Center).Padding(4, 8).Children(func() {
-				ui.Text(c, it.Encrypted).FontSize(12).Width(310).SingleLine().TextColor(t.TextMuted)
+				ui.Text(c, it.Source).FontSize(12).Width(310).SingleLine().TextColor(t.TextMuted)
 				ui.Text(c, "→").FontSize(12).TextColor(t.TextMuted)
 				if it.Err != nil {
-					ui.Text(c, "无法解密").FontSize(12).TextColor(t.Danger)
+					ui.Text(c, "无法"+a.actionWord()).FontSize(12).TextColor(t.Danger)
 				} else {
-					ui.Text(c, it.Decrypted).FontSize(12).SingleLine().Grow(1)
+					ui.Text(c, it.Target).FontSize(12).SingleLine().Grow(1)
 				}
 			})
 		}).Grow(1)
@@ -186,7 +199,7 @@ func (a *app) buildFooter(c *ui.Context, t *ui.Theme) {
 	ui.Divider(c)
 
 	if a.running {
-		ui.Progress(c, a.progress.Percent()/100).Label("解密进度")
+		ui.Progress(c, a.progress.Percent()/100).Label(a.actionWord() + "进度")
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 			ui.Textf(c, "%d / %d 个文件", a.progress.DoneFiles, a.progress.TotalFiles).
 				FontSize(12).TextColor(t.TextMuted)
@@ -205,7 +218,7 @@ func (a *app) buildFooter(c *ui.Context, t *ui.Theme) {
 	if !a.running && a.result != nil {
 		switch {
 		case len(a.result.Failed) == 0:
-			ui.Textf(c, "完成：%d 个文件已解密到 %s", a.result.Success, a.dstDir).
+			ui.Textf(c, "完成：%d 个文件已%s到 %s", a.result.Success, a.actionWord(), a.dstDir).
 				FontSize(12).TextColor(t.TextMuted)
 		default:
 			ui.Textf(c, "完成：成功 %d 个，失败 %d 个", a.result.Success, len(a.result.Failed)).
@@ -230,7 +243,7 @@ func (a *app) buildFooter(c *ui.Context, t *ui.Theme) {
 			ui.Text(c, hint).FontSize(12).TextColor(t.TextMuted)
 		}
 		ui.Text(c, "").Grow(1)
-		if ui.PrimaryButton(c, "开始解密").Disabled(!a.valid()).Clicked() {
+		if ui.PrimaryButton(c, "开始"+a.actionWord()).Disabled(!a.valid()).Clicked() {
 			a.start()
 		}
 	})
@@ -247,4 +260,12 @@ func formatSpeed(bytesPerSec float64) string {
 	default:
 		return fmt.Sprintf("%.1f MB/s", bytesPerSec/(1024*1024))
 	}
+}
+
+// actionWord 是当前操作的动词，用来拼按钮和提示文案。
+func (a *app) actionWord() string {
+	if a.mode == cryptjob.Encrypt {
+		return "加密"
+	}
+	return "解密"
 }

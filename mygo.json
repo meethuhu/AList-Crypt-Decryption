@@ -1,6 +1,6 @@
 {
-  "name": "AList Crypt Decryption",
-  "identifier": "com.meethuhu.alistcrypt",
+  "name": "Crypt Tool",
+  "identifier": "com.meethuhu.crypttool",
   "version": "2.0.0",
   "out": "build"
 }

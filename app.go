@@ -5,11 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/egoist/mygo"
-	"github.com/meethuhu/alist-crypt-decryption/internal/decryptor"
+	"github.com/meethuhu/alist-crypt-decryption/internal/cryptjob"
 	"github.com/meethuhu/alist-crypt-decryption/internal/rcrypt"
 )
 
@@ -22,13 +23,16 @@ var (
 
 // previewItem 是文件名预览里的一行。
 type previewItem struct {
-	Encrypted string
-	Decrypted string
-	Err       error
+	Source string
+	Target string
+	Err    error
 }
 
 // app 是窗口展示的全部状态。view 每帧都从它重建界面。
 type app struct {
+	// 当前是加密还是解密
+	mode cryptjob.Mode
+
 	// 表单
 	srcDir       string
 	dstDir       string
@@ -51,8 +55,8 @@ type app struct {
 
 	// 解密过程
 	running  bool
-	progress decryptor.Progress
-	result   *decryptor.Result
+	progress cryptjob.Progress
+	result   *cryptjob.Result
 	cancel   context.CancelFunc
 	errorMsg string
 	logs     []string
@@ -66,12 +70,59 @@ type app struct {
 }
 
 func newApp() *app {
-	return &app{
+	a := &app{
 		nameEnc:  "standard",
 		encoding: "base64",
 		suffix:   ".bin",
 		dirEnc:   true,
 	}
+	// 默认就在当前目录干活：把程序丢进一堆文件里，双击打开即可，
+	// 不用先去挑目录。
+	wd, err := os.Getwd()
+	if err != nil {
+		wd = "."
+	}
+	a.srcDir = wd
+	a.dstDir = filepath.Join(wd, defaultOutName(a.mode))
+	return a
+}
+
+// defaultOutName 是每种模式默认的输出目录名。
+func defaultOutName(m cryptjob.Mode) string {
+	if m == cryptjob.Encrypt {
+		return "encrypted"
+	}
+	return "decrypted"
+}
+
+// modeIndex 把当前模式映射成分段控件的下标。
+func (a *app) modeIndex() int {
+	if a.mode == cryptjob.Encrypt {
+		return 1
+	}
+	return 0
+}
+
+// modeAt 把分段控件的下标还原成模式。
+func modeAt(i int) cryptjob.Mode {
+	if i == 1 {
+		return cryptjob.Encrypt
+	}
+	return cryptjob.Decrypt
+}
+
+// setMode 切换加解密方向。输出目录如果还是默认名字，就跟着一起换。
+func (a *app) setMode(m cryptjob.Mode) {
+	if a.mode == m {
+		return
+	}
+	if a.dstDir != "" && filepath.Base(a.dstDir) == defaultOutName(a.mode) {
+		a.dstDir = filepath.Join(filepath.Dir(a.dstDir), defaultOutName(m))
+	}
+	a.mode = m
+	a.result = nil
+	a.errorMsg = ""
+	a.schedulePreview()
 }
 
 func (a *app) cipherOptions() rcrypt.Options {
@@ -100,7 +151,10 @@ func (a *app) readyHint() string {
 	case a.password == "":
 		return "请填写密码"
 	case a.srcDir == "":
-		return "请选择加密目录"
+		if a.mode == cryptjob.Encrypt {
+			return "请选择要加密的目录"
+		}
+		return "请选择加密文件所在的目录"
 	case a.dstDir == "":
 		return "请选择输出目录"
 	case a.srcDir == a.dstDir:
@@ -131,7 +185,7 @@ func (a *app) schedulePreview() {
 	go func() {
 		time.Sleep(previewDebounce)
 
-		items, total, note, err := buildPreview(a.srcDir, a.dstDir, a.cipherOptions(), previewFileLimit)
+		items, total, note, err := buildPreview(a.srcDir, a.dstDir, a.cipherOptions(), a.mode, previewFileLimit)
 
 		a.updateUI(func() {
 			if seq != a.previewSeq {
@@ -150,8 +204,8 @@ func (a *app) schedulePreview() {
 	}()
 }
 
-// buildPreview 扫描源目录，解密前若干个文件名。
-func buildPreview(src, dst string, opts rcrypt.Options, limit int) ([]previewItem, int, string, error) {
+// buildPreview 扫描源目录，预览前若干个文件名会变成什么。
+func buildPreview(src, dst string, opts rcrypt.Options, mode cryptjob.Mode, limit int) ([]previewItem, int, string, error) {
 	c, err := rcrypt.New(opts)
 	if err != nil {
 		return nil, 0, "", err
@@ -173,12 +227,12 @@ func buildPreview(src, dst string, opts rcrypt.Options, limit int) ([]previewIte
 			return nil // 单个目录读不了就跳过，不打断预览
 		}
 		if d.IsDir() {
-			if path == dstAbs {
+			if path == dstAbs || cryptjob.ShouldSkip(d.Name(), true) {
 				return fs.SkipDir
 			}
 			return nil
 		}
-		if !d.Type().IsRegular() {
+		if !d.Type().IsRegular() || cryptjob.ShouldSkip(d.Name(), false) {
 			return nil
 		}
 
@@ -188,21 +242,33 @@ func buildPreview(src, dst string, opts rcrypt.Options, limit int) ([]previewIte
 		}
 		relSlash := filepath.ToSlash(rel)
 
-		plain, derr := c.DecryptFileName(relSlash)
-		if derr != nil {
-			if errors.Is(derr, rcrypt.ErrNotEncrypted) {
+		var mapped string
+		if mode == cryptjob.Decrypt {
+			mapped, err = c.DecryptFileName(relSlash)
+			if err != nil {
+				if errors.Is(err, rcrypt.ErrNotEncrypted) {
+					return nil // 不是加密文件，跳过
+				}
+				total++
+				if len(items) < limit {
+					items = append(items, previewItem{Source: relSlash, Err: err})
+				}
 				return nil
 			}
-			if len(items) < limit {
-				items = append(items, previewItem{Encrypted: relSlash, Err: derr})
+		} else {
+			mapped, err = c.EncryptFileName(relSlash)
+			if err != nil {
+				total++
+				if len(items) < limit {
+					items = append(items, previewItem{Source: relSlash, Err: err})
+				}
+				return nil
 			}
-			total++
-			return nil
 		}
 
 		total++
 		if len(items) < limit {
-			items = append(items, previewItem{Encrypted: relSlash, Decrypted: plain})
+			items = append(items, previewItem{Source: relSlash, Target: mapped})
 		}
 		return nil
 	})
@@ -213,7 +279,11 @@ func buildPreview(src, dst string, opts rcrypt.Options, limit int) ([]previewIte
 
 	note := ""
 	if total == 0 {
-		note = "这个目录里没有找到可解密的文件"
+		if mode == cryptjob.Encrypt {
+			note = "这个目录里没有可加密的文件"
+		} else {
+			note = "这个目录里没有找到可解密的文件"
+		}
 	} else if total > len(items) {
 		note = fmt.Sprintf("共 %d 个文件，仅预览前 %d 个", total, len(items))
 	}
@@ -239,17 +309,18 @@ func (a *app) start() {
 	a.result = nil
 	a.errorMsg = ""
 	a.logs = nil
-	a.progress = decryptor.Progress{}
+	a.progress = cryptjob.Progress{}
 
-	src, dst := a.srcDir, a.dstDir
+	src, dst, mode := a.srcDir, a.dstDir, a.mode
 
 	go func() {
-		res, runErr := decryptor.Run(ctx, src, dst, c, decryptor.Options{
+		res, runErr := cryptjob.Run(ctx, src, dst, c, cryptjob.Options{
+			Mode:      a.mode,
 			Overwrite: true,
-			OnProgress: func(p decryptor.Progress) {
+			OnProgress: func(p cryptjob.Progress) {
 				a.updateUI(func() { a.progress = p })
 			},
-			OnFileDone: func(fr decryptor.FileResult) {
+			OnFileDone: func(fr cryptjob.FileResult) {
 				if fr.Err == nil {
 					return
 				}
@@ -267,12 +338,12 @@ func (a *app) start() {
 				a.showToast("已取消")
 			case runErr != nil:
 				a.errorMsg = runErr.Error()
-				a.showToast("解密失败：" + runErr.Error())
+				a.showToast(mode.String() + "失败：" + runErr.Error())
 			case res != nil && len(res.Failed) > 0:
 				a.pushLog(fmt.Sprintf("完成，%d 个文件失败", len(res.Failed)))
 				a.showToast(fmt.Sprintf("完成：成功 %d 个，失败 %d 个", res.Success, len(res.Failed)))
 			case res != nil:
-				a.showToast(fmt.Sprintf("完成：%d 个文件已解密", res.Success))
+				a.showToast(fmt.Sprintf("完成：%d 个文件已%s", res.Success, mode))
 			}
 		})
 	}()

@@ -88,14 +88,9 @@ func (d *Decrypter) fill() error {
 	return nil
 }
 
-// incrementNonce 按小端顺序给 24 字节 nonce 加一，与 rclone 的 carry(0) 一致。
+// incrementNonce 让 nonce 前进一格，实现见 encrypt.go。
 func (d *Decrypter) incrementNonce() {
-	for i := 0; i < len(d.nonce); i++ {
-		d.nonce[i]++
-		if d.nonce[i] != 0 {
-			return
-		}
-	}
+	incrementNonce(&d.nonce)
 }
 
 // DecryptedSize 根据加密后的文件大小推算明文大小，用于进度估算。

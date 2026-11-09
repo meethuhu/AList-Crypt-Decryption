@@ -12,7 +12,7 @@ func main() {
 
 	mygo.App.WhenReady(func() {
 		a.win = mygo.NewWindow(mygo.WindowOptions{
-			Title:     "AList Crypt 解密器",
+			Title:     appName,
 			Width:     800,
 			Height:    840,
 			MinWidth:  640,

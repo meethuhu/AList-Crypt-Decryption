@@ -71,16 +71,20 @@ EOF
   local saltArg=""
   [ "$useSalt" = "yes" ] && saltArg="$SALT"
 
+  local outDir="$WORK/out-$CASE_N"
+  mkdir -p "$outDir"
   local out
-  out=$(cd "$ROOT" && go run ./cmd/verify \
+  out=$(cd "$ROOT" && go run ./cmd/crypt \
+    -mode decrypt \
     -src "$(winpath "$caseDir/enc")" \
-    -plain "$(winpath "$PLAIN")" \
+    -dst "$(winpath "$outDir")" \
     -password "$PASSWORD" \
     -salt "$saltArg" \
-    -mode "$mode" \
+    -name-encryption "$mode" \
     -encoding "$enc" \
     -suffix ".bin" \
-    -dir-enc="$dirEnc" 2>&1)
+    -dir-encryption="$dirEnc" \
+    -compare "$(winpath "$PLAIN")" 2>&1)
 
   if [ $? -eq 0 ]; then
     printf '  %-46s 通过\n' "$label"
